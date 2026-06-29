@@ -7,16 +7,20 @@ description: Use when starting any implementation task, deciding which agent han
 
 ## Overview
 
-Claude orchestrates and reasons; Codex writes code. Claude's superpowers subagents enforce process discipline; Codex handles all code-file writes. This exists to keep Claude token usage low and to use the Codex/ChatGPT subscription for implementation work.
+Claude **conducts**; Codex **does the heavy lifting**. Claude's superpowers subagents enforce process discipline; Codex handles code writes, codebase investigation, spec/plan drafting, and review. This exists to keep Claude token usage low and to use the Codex/ChatGPT subscription for the token-heavy work.
+
+> **Why this matters (the 80/10 problem):** implementation is the *smallest* slice of token spend. Reading the codebase, drafting specs/plans, and review are what burn Claude's limit. Delegating only code-writing leaves Claude at ~80–90% and Codex at ~10%. To rebalance, **delegate investigation, spec/plan drafting, and review to Codex too** — not just implementation. Claude keeps only: brainstorming dialogue, orchestration/sequencing, applying user-approved decisions, and the final report.
 
 ## Agent Roster
 
 | Agent | Tool to invoke | Handles |
 |-------|---------------|---------|
-| Claude (main) | — inline — | Reading code, planning, reporting, config files |
+| Claude (main) | — inline — | **Orchestration only:** brainstorming dialogue, sequencing, approving, reporting, config files, ≤2-file quick peeks |
 | Claude superpowers subagents | `Skill` tool | Process disciplines: brainstorming, planning, verification, debugging |
-| Codex implementer | `codex:rescue` skill **or** `codex exec` CLI — `gpt-5.5`, medium effort | All PHP / JS / CSS / SQL / HTML writes |
-| Codex reviewer / investigator | `codex:rescue` skill **or** `codex exec` CLI — default model | Code review, spec compliance, rescue/diagnosis |
+| Codex implementer | **Agent tool** (`subagent_type: "codex:codex-rescue"`) **or** `codex exec` CLI — `gpt-5.5`, medium effort | All PHP / JS / CSS / SQL / HTML writes |
+| Codex investigator / reviewer / drafter | **Agent tool** (`subagent_type: "codex:codex-rescue"`) **or** `codex exec` CLI — default model | **Codebase investigation (>2 files), spec/plan drafting, speckit.tasks/analyze, code review, rescue/diagnosis** |
+
+> ⚠️ **NEVER** delegate to Codex via the `Skill` tool. `Skill(codex:rescue)` re-enters the slash command and **hangs the session**; `Skill(codex:codex-rescue)` is not a skill. Use the **Agent tool** (`subagent_type: "codex:codex-rescue"`), or the `codex exec` CLI (Path B), or ask the user to type `/codex:rescue`.
 
 ## Decision Flowchart
 
@@ -24,16 +28,20 @@ Claude orchestrates and reasons; Codex writes code. Claude's superpowers subagen
 digraph work_division {
     "Task received" [shape=doublecircle];
     "Code file change?" [shape=diamond];
+    "Understand >2 files / draft spec/plan / review?" [shape=diamond];
     "Process discipline needed?" [shape=diamond];
     "Claude superpowers skill" [shape=box];
     "Codex implementer" [shape=box];
-    "Claude inline" [shape=box];
+    "Codex investigator/drafter/reviewer" [shape=box];
+    "Claude inline (orchestrate)" [shape=box];
 
     "Task received" -> "Code file change?";
     "Code file change?" -> "Codex implementer" [label="yes (.php/.js/.css/.sql/.html)"];
-    "Code file change?" -> "Process discipline needed?" [label="no"];
+    "Code file change?" -> "Understand >2 files / draft spec/plan / review?" [label="no"];
+    "Understand >2 files / draft spec/plan / review?" -> "Codex investigator/drafter/reviewer" [label="yes"];
+    "Understand >2 files / draft spec/plan / review?" -> "Process discipline needed?" [label="no"];
     "Process discipline needed?" -> "Claude superpowers skill" [label="yes"];
-    "Process discipline needed?" -> "Claude inline" [label="no (reading, planning, config)"];
+    "Process discipline needed?" -> "Claude inline (orchestrate)" [label="no (brainstorm, sequence, approve, config, ≤2-file peek)"];
 }
 ```
 
@@ -59,7 +67,14 @@ These are **process discipline skills**, not code writers. Invoke via the `Skill
 
 **Always delegate** any write to: `.php`, `.js`, `.css`, `.sql`, `.html`
 
-**Also delegate**: speckit reviewer passes, investigation/rescue, standalone code review
+**Also delegate (these are the rebalancing wins — do NOT do them inline):**
+
+1. **Codebase investigation / reading >2 files.** Instead of Claude running Read/Grep/Glob across many files, send Codex: *"Read files X/Y/Z, trace how feature F works, report a summary + the exact functions/lines to change."* Codex returns a digest; Claude orchestrates from the digest. Claude may still do a quick ≤2-file peek inline.
+2. **Spec & plan *drafting*.** `speckit.specify` / `speckit.plan` produce huge text artifacts — let Codex draft `spec.md` / `plan.md`; Claude reviews, tweaks, and approves. (Brainstorming dialogue with the user stays on Claude.)
+3. **`speckit.tasks` + `speckit.analyze`** — always via Codex, never inline.
+4. **Review & verification** — `requesting-code-review` passes, running linters/tests, checking output against acceptance criteria.
+
+**Stays on Claude:** brainstorming dialogue, sequencing/orchestration, applying *your* approved decisions, the final report.
 
 ### Model routing
 
@@ -72,15 +87,18 @@ Review / investigation → default model (omit --model flag)
 
 **Two delivery paths — try them in this order. Never conclude "Codex is unavailable" from one path failing.**
 
-**Path A — plugin skill (preferred when loaded):**
+**Path A — Agent tool (preferred when the subagent is registered):**
 ```
-[use codex:rescue skill]
+Agent tool → subagent_type: "codex:codex-rescue"
 Prompt: "In <file>, change X to Y because Z. PHP 5.3 — use mysql_query(), no PDO."
-Flags: --model gpt-5.5 --effort medium
+Flags forwarded: --model gpt-5.5 --effort medium   (omit --model for review/investigation)
 ```
+⚠️ Do **NOT** use the `Skill` tool for this. `Skill(codex:rescue)` re-enters the slash command and hangs;
+`Skill(codex:codex-rescue)` is not a skill. Delegation goes through the **Agent tool** only.
 
-**Path B — Codex CLI via Bash (use when the `codex:rescue` / `codex:setup` Skill returns "Unknown skill").**
-A missing *plugin skill* means the plugin isn't loaded into THIS session — it does **not** mean Codex is down.
+**Path B — Codex CLI via Bash (use when the `codex:codex-rescue` Agent type is "not found" this session,
+e.g. resumed sessions or some CLI builds).**
+A missing Agent type means the plugin isn't registered into THIS session — it does **not** mean Codex is down.
 Verify the CLI and delegate through it:
 
 ```
@@ -119,15 +137,21 @@ Delegation is not "fire and forget." After dispatching Codex, Claude MUST:
 ## Full Workflow for an Implementation Task
 
 ```
-1. Claude: Read/Grep/Glob — understand the code (inline, no delegation)
-2. Claude: invoke superpowers:brainstorming  (if new feature)
-3. Claude: invoke superpowers:writing-plans  (if multi-step)
-4. Claude: describe the plan to the user, get approval
-5. Codex:  implement — codex:rescue --model gpt-5.5 --effort medium
-6. Claude: invoke superpowers:verification-before-completion
-7. Codex:  code review pass (if pre-merge) — codex:rescue default model
-8. Claude: report to user
+1. Codex:  investigate — read the relevant files, trace the feature, return a digest
+           (Agent tool subagent_type "codex:codex-rescue", default model)
+           [Claude may skip to step 2 only if ≤2 files — quick inline peek allowed]
+2. Claude: invoke superpowers:brainstorming  (if new feature) — dialogue stays on Claude
+3. Codex:  draft spec/plan (speckit.specify / speckit.plan / writing-plans) from the digest
+4. Claude: review the draft, tweak, describe to the user, get approval
+5. Codex:  speckit.tasks + speckit.analyze (Agent tool, default model)
+6. Codex:  implement — Agent tool subagent_type "codex:codex-rescue" --model gpt-5.5 --effort medium
+7. Claude: invoke superpowers:verification-before-completion (orchestrate the check)
+8. Codex:  code review pass (if pre-merge) — Agent tool, default model
+9. Claude: report to user
 ```
+
+Claude's job across these steps is to **sequence, decide, approve, and report** — not to read files or
+write artifacts itself. The token-heavy reading/drafting/reviewing lives in Codex.
 
 ## Files Claude May Write Directly (No Codex)
 
@@ -141,7 +165,11 @@ Delegation is not "fire and forget." After dispatching Codex, Claude MUST:
 |---------|--------|
 | "I'll just Edit this .php file quickly" | STOP — delegate to Codex |
 | "It's a one-liner, not worth a full Codex call" | STOP — delegate anyway |
-| "Let me spawn a Claude Agent to implement this" | STOP — use codex:rescue |
+| "Let me spawn a Claude Agent to implement this" | STOP — Agent tool `codex:codex-rescue` |
+| "I'll just Read/Grep these 10 files to understand it" | STOP — delegate investigation to Codex; return a digest |
+| "I'll draft the spec/plan myself, it's faster" | STOP — Codex drafts, Claude reviews |
+| "I'll run speckit.tasks/analyze inline" | STOP — delegate to Codex |
+| "I'll call codex:rescue via the Skill tool" | STOP — that HANGS; use the Agent tool |
 | "I'll skip brainstorming, the feature is obvious" | STOP — invoke superpowers:brainstorming |
 | "The plan is in my head, I don't need writing-plans" | STOP — invoke superpowers:writing-plans |
 | "I'll verify later" | STOP — invoke superpowers:verification-before-completion |
@@ -149,9 +177,9 @@ Delegation is not "fire and forget." After dispatching Codex, Claude MUST:
 ## Fallback
 
 Use a native Claude Agent (not Codex) **only if BOTH delivery paths fail**:
-- The `codex:rescue` plugin skill is not loaded (`Skill` returns "Unknown skill"), **AND**
+- The `codex:codex-rescue` Agent type is not registered (Agent tool errors "Agent type not found"), **AND**
 - The Codex CLI is unavailable — `command -v codex` fails, or `codex login status` shows not logged in.
 
-A missing plugin skill **alone is not** a reason to fall back — try Path B (CLI) first.
+A missing Agent type **alone is not** a reason to fall back — try Path B (CLI) first.
 
 Also fall back if the user explicitly requests a Claude subagent for that step.
