@@ -150,6 +150,32 @@ Also fall back if the user explicitly requests a Claude subagent.
 
 ---
 
+## Quota-aware escalation — the 85% rule (HARD)
+
+Claude Code meters usage against a rolling **5-hour session quota**. **The moment usage
+reaches 85% of that quota, switch into CONSERVATION MODE** and stay there until the quota
+**resets** (the next 5-hour window).
+
+In conservation mode:
+
+| What | Who |
+|------|-----|
+| Brainstorming questions / dialogue, clarifying, deciding, approving | **Claude** |
+| Reviewing Codex's output, verifying against the ask, final report | **Claude** |
+| **Everything else** — investigation, reading files, drafting specs/plans, tasks/analyze, implementation, tests/linters, docs | **Codex** |
+
+- No inline Read/Grep sweeps, no inline Edit/Write, no inline drafting — **all** delegated.
+- Every "is this small enough to just do inline?" judgment is resolved **in Codex's favour**
+  while in conservation mode. The only inline exceptions remain ≤1-line edits to
+  `CLAUDE.md` / `.claude/` config / `settings.json`.
+
+**How Claude knows it hit 85%:** the harness surfaces session-usage / approaching-limit
+warnings, and the user may state it directly. On any ≥85% signal, announce *"entering
+conservation mode — delegating all work to Codex until quota reset"*, apply this rule, and
+resume the normal delegation rules only after the 5-hour window resets.
+
+---
+
 ## Installation
 
 Trigger: the user asks to **install / set up** this delegation system on a machine.

@@ -29,4 +29,18 @@ Get-ChildItem -Path $srcSkills -Directory | ForEach-Object {
 
 Write-Host ""
 Write-Host "Done. Restart Claude Code (or /reload) so it picks up the new skills." -ForegroundColor Cyan
-Write-Host "Note: these skills delegate to Codex — install & log in to the Codex CLI / openai/codex-plugin-cc plugin for them to work fully." -ForegroundColor Yellow
+
+# Required dependency: the codex@openai-codex plugin provides the codex:codex-rescue subagent.
+$installedPlugins = Join-Path $env:USERPROFILE '.claude\plugins\installed_plugins.json'
+$hasCodexPlugin = (Test-Path $installedPlugins) -and `
+    (Select-String -Path $installedPlugins -Pattern 'codex@openai-codex|openai-codex' -Quiet)
+if (-not $hasCodexPlugin) {
+    Write-Host ""
+    Write-Host "REQUIRED: the codex@openai-codex plugin is not installed — the skills cannot delegate without it." -ForegroundColor Red
+    Write-Host "  Install it in Claude Code:" -ForegroundColor Yellow
+    Write-Host "    /plugin marketplace add openai/codex-plugin-cc" -ForegroundColor Yellow
+    Write-Host "    /plugin install codex@openai-codex" -ForegroundColor Yellow
+    Write-Host "  Then run /codex:setup and ensure the Codex CLI is logged in (codex login status)." -ForegroundColor Yellow
+} else {
+    Write-Host "Found codex@openai-codex plugin. Run /codex:setup to confirm it's ready." -ForegroundColor Green
+}

@@ -29,4 +29,16 @@ done
 
 echo ""
 echo "Done. Restart Claude Code (or /reload) so it picks up the new skills."
-echo "Note: these skills delegate to Codex — install & log in to the Codex CLI / openai/codex-plugin-cc plugin for them to work fully."
+
+# Required dependency: the codex@openai-codex plugin provides the codex:codex-rescue subagent.
+installed_plugins="$HOME/.claude/plugins/installed_plugins.json"
+if [ -f "$installed_plugins" ] && grep -Eq 'codex@openai-codex|openai-codex' "$installed_plugins"; then
+  echo "Found codex@openai-codex plugin. Run /codex:setup to confirm it's ready."
+else
+  echo ""
+  echo "REQUIRED: the codex@openai-codex plugin is not installed — the skills cannot delegate without it."
+  echo "  Install it in Claude Code:"
+  echo "    /plugin marketplace add openai/codex-plugin-cc"
+  echo "    /plugin install codex@openai-codex"
+  echo "  Then run /codex:setup and ensure the Codex CLI is logged in (codex login status)."
+fi

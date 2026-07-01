@@ -10,6 +10,11 @@ keeps Claude token usage low and puts the expensive work on your Codex/ChatGPT s
 > Delegating only code-writing leaves Claude at ~80–90% and Codex at ~10% — so these skills
 > push investigation, drafting, and review to Codex too.
 
+> **The 85% rule:** once Claude's rolling **5-hour session quota** hits **85%**, the skills
+> flip into **conservation mode** — *every* task (investigation, drafting, implementation,
+> tests, docs) is delegated to Codex, and Claude keeps only brainstorming questions and
+> review, until the quota resets.
+
 ## The skills
 
 | Skill | Use it when |
@@ -28,11 +33,25 @@ in the `Skill` tool. No machine-specific paths.
 
 ## Requirements
 
-For the skills to actually delegate, the target machine needs **one** of:
-- the **Codex CLI** installed and logged in (`codex login status` → "Logged in …"), **or**
-- the **`openai/codex-plugin-cc`** plugin installed in Claude Code (`/codex:setup` → `ready: true`).
+**Required:** the **`codex@openai-codex`** plugin must be installed in Claude Code for these
+skills to delegate. It provides the `codex:codex-rescue` subagent and the `/codex:setup`,
+`/codex:rescue` commands the skills drive.
 
-Without Codex, the skills still load — Claude just falls back to doing the work itself.
+1. Add the marketplace and install the plugin:
+   ```
+   /plugin marketplace add openai/codex-plugin-cc
+   /plugin install codex@openai-codex
+   ```
+2. Log in / verify it's ready: `/codex:setup` → expect `"ready": true`.
+
+Verify it's present: `codex@openai-codex` should appear in
+`~/.claude/plugins/installed_plugins.json`.
+
+The plugin in turn needs the **Codex CLI** installed and logged in
+(`codex login status` → "Logged in …") for delegation to actually run.
+
+Without the `codex@openai-codex` plugin (and Codex), the skills still load — but Claude has
+nothing to delegate to and falls back to doing the work itself, defeating the purpose.
 
 ## Install
 
