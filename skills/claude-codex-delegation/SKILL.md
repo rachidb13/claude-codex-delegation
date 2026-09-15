@@ -113,12 +113,123 @@ Everything else (investigate, draft, tasks/analyze, review) → default model (o
 Claude's job is to **sequence, decide, approve, report** — not to read files or write
 artifacts itself. The token-heavy reading/drafting/reviewing lives in Codex.
 
-### Waiting & verifying (after every delegated run)
-1. **Don't poll.** A background `codex exec` / background Agent is harness-tracked; Claude
-   is re-invoked automatically when it finishes. Don't burn turns with sleep/timeout loops.
-2. **Verify before reporting done.** Read the diff/files, run `php -l` (or the relevant
-   linter), check against the spec/acceptance criteria.
-3. **Report** with evidence. If Codex drifted, send a corrective follow-up brief — don't fix
+### Waiting on Codex — read this before every delegated run
+
+**The failure this prevents:** the session appears to hang for hours. Claude delegates, gets
+no completion signal, and waits for a notification that will never arrive. Earlier versions of
+this skill said "don't poll, the harness re-invokes you automatically." That is true for one
+path and **false for the plugin path**, which is the one this skill tells you to use first.
+
+Know which path you are on, because they behave differently:
+
+| Path | What returns | Harness-tracked? | How you learn it finished |
+|---|---|---|---|
+| **Agent tool** `codex:codex-rescue` (plugin) | **Immediately**, with a job id like `task-abc-123` | **NO** — the real work runs in a detached companion process | **You must watch it.** Nothing will wake you. |
+| **Bash `codex exec`** with `run_in_background: true` | when Codex actually exits | **YES** | Harness notifies on exit |
+
+The plugin path returning a job id is **not** completion. Reading "Codex Task started in the
+background as `task-…`" and then waiting is the exact mistake — that string means the work has
+barely begun.
+
+**After every Agent-tool delegation, immediately arm the watcher** (bundled with this skill).
+Run it under Bash with `run_in_background: true`, which makes the harness track *the watcher*
+and notify you when the job reaches a terminal state:
+
+```bash
+bash ~/.claude/skills/claude-codex-delegation/assets/watch-codex-job.sh <job-id> 3600 20
+```
+
+Exit codes: `0` completed · `1` failed/cancelled · `2` still running at the deadline (the job
+is alive — keep waiting or `cancel`) · `3` usage/environment error.
+
+Arm it in the **same turn** you launch the job. A watcher armed three turns later is three
+turns of dead session.
+
+Then collect the actual output — status alone never contains it:
+
+```bash
+node <companion> result <job-id>     # the report; `status --json` only gives state + summary
+node <companion> cancel <job-id>     # if it has stalled or you no longer need it
+```
+
+**Never write your own `pgrep`-based wait loop.** `pgrep -f "some_script.py --flag"` matches
+the watcher's *own* command line, because that string appears in it — so the loop matches
+itself and spins forever. This has burned real sessions. Wait on the job id, on a PID captured
+at launch (`$!`), or on a sentinel line in the log — never on a pattern that could match the
+waiter.
+
+### Scenarios this must cover
+
+- **Job never terminates.** The watcher's deadline turns an infinite hang into an exit-2 you
+  can act on. Choose it from the work: minutes for a review, up to an hour for a large
+  implementation. On exit 2, decide explicitly — keep waiting or cancel. Don't re-delegate on
+  top of a live job; the companion refuses a second task while one is active.
+- **A zombie job blocks every future delegation.** This is the nastiest one, because the
+  symptom appears far from the cause. The companion allows only one active task per workspace,
+  so a job whose record is stuck at `running` makes *every* later delegation fail — and the
+  reason surfaces only as a terse `Task <old-id> is still running` buried in the failed job's
+  `result`, not in the error you first see. Observed: a job whose process had died sat at
+  `running` for 22 hours (its work had actually completed) and silently blocked all delegation
+  the next day.
+
+  **When a delegation fails instantly (0s elapsed), suspect this first:**
+
+  ```bash
+  node <companion> status --all --json     # look for status=running with a stale updatedAt
+  ps -p <pid> -o pid,etime,cmd             # the pid from the job record — is it even alive?
+  node <companion> cancel <stale-job-id>   # reap it, then re-delegate
+  ```
+
+  A job record claiming `running` whose pid is dead is a zombie. Cancel it. Consider a quick
+  `status --all` sweep before a long delegation session, since one zombie blocks everything
+  after it.
+
+  **`Task <id> is still running` has two very different meanings — check the pid before
+  reacting.** Pid alive = the job is genuinely working; wait, do not cancel. Pid dead = zombie;
+  cancel and re-delegate. Cancelling a live job because you mistook it for a zombie throws away
+  real work.
+- **A correction sent mid-flight is silently dropped.** Sending a follow-up to an agent whose
+  Codex job is still running fails with the same `still running` message, and the correction
+  never reaches Codex — it does not queue. So if you spot an error in your own brief while the
+  job is in flight, you have two choices: wait for the job to finish and correct the *output*
+  yourself, or cancel and re-delegate with a fixed brief. Decide by how load-bearing the error
+  is. A wrong factual claim you can simply overrule when reading the report is not worth
+  discarding a running investigation for; a wrong *objective* is.
+- **Forwarding corrupts the prompt.** The forwarder passes your prompt through a shell.
+  Backticks in the text get interpreted as command substitution and silently mangle the brief
+  before Codex sees it. Avoid backticks, `$(...)`, and unescaped `$` in delegation prompts —
+  name code identifiers in plain words or quotes instead. If a job's summary looks truncated
+  or garbled, assume the brief was corrupted and re-send a clean version rather than reasoning
+  about the output it produced.
+- **Job fails or is cancelled.** Exit 1. Read `result` for the reason before re-delegating,
+  and fix the brief rather than resending it unchanged.
+- **Status query fails transiently.** Treated as "still unknown", never as success — a broker
+  hiccup must not be misread as completion.
+- **Resumed session / agent type missing.** The Agent tool errors "Agent type not found". Use
+  Path B (`codex exec` via Bash, `run_in_background: true`), which *is* harness-tracked and
+  needs no watcher.
+- **Codex reports success but wrote nothing.** Its summary is a claim, not evidence. Always
+  `git status` / read the diff before believing it.
+- **Codex reports success and the fix does not work.** The most expensive failure mode, and no
+  tooling catches it. A correct root-cause analysis can still be followed by a fix built on a
+  false assumption, with a passing test suite that never exercises the real shape. Observed:
+  a diagnosis was right, the fix probed an API per-symbol and gated on "a row with zero
+  value", but the API returns an *empty list* rather than a zero row — so the fix changed
+  nothing while 691 tests passed.
+
+  **Verify the load-bearing assumption yourself**, against the real system where you can. Then
+  ask: *does a test exist that fails without this fix?* When a fix targets a specific observed
+  incident, require the regression test to be **shown failing on the pre-fix code first**. A
+  test written after a bug that passes immediately proves nothing — it may be asserting the
+  same wrong assumption the fix encodes.
+- **Stale brokers.** Each project keeps an `app-server-broker.mjs` alive; several may linger
+  across projects. Harmless, but if Codex behaves oddly, check `pgrep -af app-server-broker`
+  before assuming a code fault.
+
+### Verifying (after every delegated run)
+1. **Verify before reporting done.** Read the diff/files, run the relevant linter/tests, check
+   against the spec and acceptance criteria. Codex's own summary is not verification.
+2. **Report** with evidence. If Codex drifted, send a corrective follow-up brief — don't fix
    inline.
 
 ---
@@ -141,6 +252,9 @@ Everything else — PHP, JS, SQL, CSS, HTML — goes to Codex.
 | "I'll draft the spec/plan myself, it's faster" | STOP — Codex drafts, Claude reviews |
 | "I'll run speckit.tasks/analyze inline" | STOP — delegate to Codex |
 | "I'll call codex:rescue via the Skill tool" | STOP — that HANGS; use the Agent tool |
+| "Codex says it started in the background, I'll wait for the notification" | STOP — none is coming on the plugin path; arm the watcher this turn |
+| "I'll `pgrep -f` for the script to see when it's done" | STOP — the pattern matches your own wait loop; spins forever |
+| "Codex reported success, so it's done" | STOP — `git status` / read the diff; the summary is a claim |
 
 ## Fallback to a native Claude subagent — ONLY if BOTH fail
 - The `codex:codex-rescue` Agent type is not registered (Agent tool errors "Agent type not found"), **AND**
