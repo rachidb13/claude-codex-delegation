@@ -1,101 +1,61 @@
 # claude-codex-delegation
 
-[Claude Code](https://claude.com/claude-code) **skills** that split work between Claude and
-[Codex](https://github.com/openai/codex): **Claude conducts; Codex does the heavy lifting** —
-not just code writing, but also codebase investigation, spec/plan drafting, and review. This
-keeps Claude token usage low and puts the expensive work on your Codex/ChatGPT subscription.
+Quota-aware work splitting between [Claude Code](https://claude.com/claude-code) and
+[Codex](https://github.com/openai/codex). Before every prompt, a hook reads **both** live
+quotas and tells Claude who should do the work and on which model. Whichever side still has
+room does the heavy lifting.
 
-> **The 80/10 problem these solve:** implementation is the *smallest* slice of token spend.
-> Reading the codebase, drafting specs/plans, and review are what burn Claude's limit.
-> Delegating only code-writing leaves Claude at ~80–90% and Codex at ~10% — so these skills
-> push investigation, drafting, and review to Codex too.
-
-> **The 85% rule:** once Claude's rolling **5-hour session quota** hits **85%**, the skills
-> flip into **conservation mode** — *every* task (investigation, drafting, implementation,
-> tests, docs) is delegated to Codex, and Claude keeps only brainstorming questions and
-> review, until the quota resets.
-
-## The skills
-
-| Skill | Use it when |
-|-------|-------------|
-| **`claude-codex-delegation`** | The complete, **self-installing** delegation system. Contains all the rules *and* an installer that wires the delegation block into `CLAUDE.md` and a reminder hook into `settings.json`. Say "install the claude-codex-delegation skill". |
-| **`codex-daily-delegation`** | Deciding *who* does any piece of work. Simple (1–5 lines, one file) → Claude. Complex (multi-step, multi-file, new feature, refactor, review, investigation) → Codex. |
-| **`hybrid-claude-codex-delegation`** | Starting any implementation task. Defines the full three-agent roster (Claude main, Claude superpowers subagents, Codex) and the mandatory delegate → verify → report workflow. |
-
-All are auto-discovered by Claude Code once installed under `~/.claude/skills/`, and surface
-in the `Skill` tool. No machine-specific paths.
-
-> ⚠️ **Invocation:** delegate to Codex via the **Agent tool**
-> (`subagent_type: "codex:codex-rescue"`), the `codex exec` CLI, or the `/codex:rescue` slash
-> command. **Never** via the `Skill` tool — `Skill(codex:rescue)` re-enters the slash command
-> and hangs the session.
-
-## Requirements
-
-**Required:** the **`codex@openai-codex`** plugin must be installed in Claude Code for these
-skills to delegate. It provides the `codex:codex-rescue` subagent and the `/codex:setup`,
-`/codex:rescue` commands the skills drive.
-
-1. Add the marketplace and install the plugin:
-   ```
-   /plugin marketplace add openai/codex-plugin-cc
-   /plugin install codex@openai-codex
-   ```
-2. Log in / verify it's ready: `/codex:setup` → expect `"ready": true`.
-
-Verify it's present: `codex@openai-codex` should appear in
-`~/.claude/plugins/installed_plugins.json`.
-
-The plugin in turn needs the **Codex CLI** installed and logged in
-(`codex login status` → "Logged in …") for delegation to actually run.
-
-Without the `codex@openai-codex` plugin (and Codex), the skills still load — but Claude has
-nothing to delegate to and falls back to doing the work itself, defeating the purpose.
-
-## Install
-
-**Windows (PowerShell)** — copy & paste all three lines:
-```powershell
-git clone https://github.com/rachidb13/claude-codex-delegation.git
-cd claude-codex-delegation
-powershell -ExecutionPolicy Bypass -File install.ps1
+```
+[DELEGATION CODEX_LOW] Claude: 53% 5h left resets 15:30, 81% week left. Codex: 9% 5h left resets 15:53, 52% week left. ...
 ```
 
-**macOS / Linux** — copy & paste all three lines:
+## Why v2
+v1 always sent work to Codex ("Claude conducts, Codex does the heavy lifting"). In practice
+that drained Codex long before Claude: on one real day Codex hit 9% left while Claude still had
+56%. It also pinned `gpt-5.5`, which Codex now marks Legacy and retires on 2026-10-14.
+
+## Modes
+| Mode | When | Who implements |
+|---|---|---|
+| BALANCED | both have >20% of the 5h window left and >15% of the week | Codex |
+| CODEX_LOW | Codex is below either threshold | Claude subagents (sonnet / opus / haiku) |
+| CLAUDE_LOW | Claude is below either threshold | Codex, including reviews |
+| BOTH_LOW | both low | nothing heavy; Claude reports the reset times |
+
+In every mode Claude does the final code review before a deploy and the deploy itself.
+Models by difficulty: Codex `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`, Claude `opus` / `sonnet` / `haiku`.
+Details are in [`skills/delegating-work/SKILL.md`](skills/delegating-work/SKILL.md).
+
+## How it reads the quotas
+- **Claude:** Claude Code passes `rate_limits` only to the statusline. The installer wraps your
+  existing statusline with `quota-route.js --tap`, which saves them to
+  `~/.claude/state/claude-usage.json` and then prints your original statusline unchanged.
+- **Codex:** the latest `rate_limits` event in `~/.codex/sessions/**.jsonl` (5h and weekly windows).
+  A window whose reset time has passed counts as full again.
+
+## Install / upgrade
+Requires Node.js, the Codex CLI, and the `codex@openai-codex` plugin
+(`/plugin marketplace add openai/codex-plugin-cc`, then `/plugin install codex@openai-codex`, then `/codex:setup`).
+
 ```bash
-git clone https://github.com/rachidb13/claude-codex-delegation.git
-cd claude-codex-delegation
-chmod +x install.sh && ./install.sh
+git clone https://github.com/rachidb13/claude-codex-delegation && cd claude-codex-delegation
+bash install.sh --dry-run    # preview
+bash install.sh              # macOS / Linux / Git-Bash
+powershell -ExecutionPolicy Bypass -File install.ps1    # Windows
 ```
 
-The installer copies each skill folder into `~/.claude/skills/` (backing up any existing
-folder of the same name). Restart Claude Code (or `/reload`) so it picks them up.
+To upgrade an existing clone: `git pull && bash install.sh`.
 
-## Make them fire automatically (recommended)
+The installer is idempotent and backs up every file it changes (`*.bak-<timestamp>`). It:
+1. installs the `delegating-work` skill and archives the v1 skills (`claude-codex-delegation`,
+   `codex-daily-delegation`, `hybrid-claude-codex-delegation`) to `~/.claude/skill-backups/`;
+2. copies `quota-route.js` to `~/.claude/bin/`;
+3. replaces the v1 static `[CODEX DELEGATION ACTIVE]` hook with the live `quota-route --hook`;
+4. wraps the statusline (skipped when it already saves `claude-usage.json`);
+5. replaces the marked delegation block in `~/.claude/CLAUDE.md`;
+6. moves the Codex default model off `gpt-5.5`/`gpt-5.4` to `gpt-5.6-sol`, but only if this Codex
+   offers it.
 
-After running `install.ps1` / `install.sh` (which copies the skill folders), tell Claude:
+Restart Claude Code afterwards. Check with `node ~/.claude/bin/quota-route.js`.
 
-> **"install the claude-codex-delegation skill"**
-
-That skill's own installer (`skills/claude-codex-delegation/assets/install.ps1` / `.sh`) then:
-- appends a delegation block to your `CLAUDE.md` (global and/or project — it asks), and
-- merges a `UserPromptSubmit` reminder hook into `settings.json`
-
-so the delegation rule is enforced on every turn. It's **idempotent** (BEGIN/END markers +
-a hook keyed on `[CODEX DELEGATION ACTIVE]`) and writes UTF-8 **without BOM** so
-`settings.json` stays valid. Restart Claude Code afterwards.
-
-To do it by hand instead, copy the block from
-`skills/claude-codex-delegation/assets/CLAUDE-block.md` into your `CLAUDE.md`, and the hook
-from `assets/settings-hook.json` into `settings.json`.
-
-## Manual install
-
-Copy the three folders under `skills/` into `~/.claude/skills/` yourself:
-
-```
-~/.claude/skills/claude-codex-delegation/        (SKILL.md + README.md + assets/)
-~/.claude/skills/codex-daily-delegation/SKILL.md
-~/.claude/skills/hybrid-claude-codex-delegation/SKILL.md
-```
+Thresholds are constants at the top of `quota-route.js` (`LOW_5H = 20`, `LOW_WEEK = 15`).
